@@ -102,10 +102,26 @@ def looks_like_target(val: str) -> bool:
     # Accept bare domains (at least one dot, no spaces, no slashes)
     if "." in val and " " not in val and "/" not in val:
         return True
-    # Accept web URLs (http/https) but skip app store links
-    if val.startswith(("http://", "https://")):
-        return True
     return False
+
+
+def normalize(targets: list[str]) -> list[str]:
+    """Deduplicate and strip https:// variants if bare domain already present."""
+    from urllib.parse import urlparse
+    bare = set()
+    for t in targets:
+        if not t.startswith(("http://", "https://")):
+            bare.add(t)
+
+    result = set()
+    for t in targets:
+        if t.startswith(("http://", "https://")):
+            host = urlparse(t).netloc or urlparse(t).path.strip("/")
+            if host not in bare:
+                result.add(host)
+        else:
+            result.add(t)
+    return sorted(result)
 
 
 async def try_playwright(url: str) -> list[str]:
@@ -214,10 +230,12 @@ async def scrape(program_url: str, output: str = "") -> list[str]:
         targets = await try_api(slug, client)
 
     if targets:
+        targets = normalize(targets)
         print(f"[*] found {len(targets)} targets via API", file=sys.stderr)
     else:
         print(f"[*] API failed, trying playwright...", file=sys.stderr)
         targets = await try_playwright(program_url)
+        targets = normalize(targets)
         print(f"[*] found {len(targets)} targets via playwright", file=sys.stderr)
 
     if not targets:
