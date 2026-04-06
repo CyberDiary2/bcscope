@@ -24,17 +24,25 @@ SCOPE_API_HEADERS = {
 
 
 def extract_slug(url: str) -> str:
-    """Extract program slug from a Bugcrowd URL."""
+    """Extract program slug from a Bugcrowd URL.
+    Handles both /tesla and /engagements/tesla formats.
+    """
     url = url.rstrip("/")
     return url.split("/")[-1]
+
+
+def is_engagement(url: str) -> bool:
+    return "/engagements/" in url or "/engagement/" in url
 
 
 async def try_api(slug: str, client: httpx.AsyncClient) -> list[str]:
     """Try Bugcrowd's JSON API endpoints for scope data."""
     endpoints = [
+        f"https://bugcrowd.com/engagements/{slug}/target_groups",
         f"https://bugcrowd.com/{slug}/target_groups",
         f"https://bugcrowd.com/engagements/{slug}/scope",
         f"https://bugcrowd.com/programs/{slug}/scope.json",
+        f"https://bugcrowd.com/engagements/{slug}.json",
     ]
     for url in endpoints:
         try:
@@ -73,16 +81,29 @@ def extract_from_json(data: dict | list) -> list[str]:
     return sorted(set(targets))
 
 
+NOISE_HOSTS = (
+    "apps.apple.com", "play.google.com", "itunes.apple.com",
+    "twitter.com", "facebook.com", "linkedin.com", "youtube.com",
+    "bugcrowd.com", "hackerone.com",
+)
+
+
 def looks_like_target(val: str) -> bool:
-    """Filter out noise - keep domains, wildcards, and URLs."""
+    """Keep domains and wildcards useful for web scanning. Filter noise."""
     val = val.strip()
     if not val or len(val) < 3 or len(val) > 253:
         return False
-    # Accept wildcards, domains, URLs
-    if val.startswith(("http://", "https://", "*.", "www.")):
+    # Skip app stores and social media
+    if any(noise in val for noise in NOISE_HOSTS):
+        return False
+    # Accept wildcards
+    if val.startswith("*."):
         return True
-    # Accept bare domains (at least one dot, no spaces)
+    # Accept bare domains (at least one dot, no spaces, no slashes)
     if "." in val and " " not in val and "/" not in val:
+        return True
+    # Accept web URLs (http/https) but skip app store links
+    if val.startswith(("http://", "https://")):
         return True
     return False
 
@@ -104,21 +125,43 @@ async def try_playwright(url: str) -> list[str]:
         api_data = []
 
         async def handle_response(response):
-            if "target_group" in response.url or "scope" in response.url or "target" in response.url:
-                try:
+            try:
+                ct = response.headers.get("content-type", "")
+                if "json" in ct:
                     body = await response.json()
-                    api_data.append(body)
-                except Exception:
-                    pass
+                    api_data.append((response.url, body))
+            except Exception:
+                pass
+
+        all_requests = []
+
+        async def handle_request(request):
+            all_requests.append(request.url)
 
         page.on("response", handle_response)
 
         try:
             await page.goto(url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
 
-            # Try to extract from intercepted API calls first
-            for data in api_data:
+            # Click the Targets tab if it exists to trigger scope API call
+            for selector in ("a[href*='targets']", "button:has-text('Targets')", "[data-tab='targets']", "a:has-text('Targets')"):
+                try:
+                    el = await page.query_selector(selector)
+                    if el:
+                        await el.click()
+                        await page.wait_for_timeout(2000)
+                        break
+                except Exception:
+                    pass
+
+            # Scroll to trigger any lazy-loaded content
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(2000)
+            pass
+
+            # Prioritise scope_ranks endpoint - that's the actual scope
+            for api_url, data in api_data:
                 found = extract_from_json(data)
                 targets.extend(found)
 

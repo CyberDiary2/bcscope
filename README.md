@@ -10,7 +10,12 @@ cd bcscope
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# arch linux - do NOT use --with-deps (tries to run apt-get and will fail)
 playwright install chromium
+
+# other linux/mac
+playwright install --with-deps chromium
 ```
 
 ## usage
