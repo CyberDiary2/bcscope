@@ -24,7 +24,7 @@ async def fetch_programs(client: httpx.AsyncClient) -> list[dict]:
     """Fetch all public bug bounty programs from Bugcrowd."""
     programs = []
     offset = 0
-    limit = 25
+    limit = 24
     while True:
         try:
             r = await client.get(
@@ -37,15 +37,15 @@ async def fetch_programs(client: httpx.AsyncClient) -> list[dict]:
                 break
             data = r.json()
             batch = data.get("engagements", [])
+            total = data.get("paginationMeta", {}).get("totalCount", 0)
             if not batch:
                 break
             for p in batch:
                 reward = p.get("rewardSummary", {}) or {}
-                # only include programs with rewards (paying)
                 if reward.get("minReward") or reward.get("maxReward") or reward.get("summary"):
                     programs.append(p)
-            print(f"[*] fetched offset {offset} — {len(programs)} paying programs so far", file=sys.stderr)
-            if len(batch) < limit:
+            print(f"[*] fetched offset {offset}/{total} — {len(programs)} paying programs so far", file=sys.stderr)
+            if offset + limit >= total:
                 break
             offset += limit
             await asyncio.sleep(0.5)
