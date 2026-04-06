@@ -23,32 +23,34 @@ HEADERS = {
 async def fetch_programs(client: httpx.AsyncClient) -> list[dict]:
     """Fetch all public bug bounty programs from Bugcrowd."""
     programs = []
-    page = 1
+    offset = 0
+    limit = 25
     while True:
         try:
             r = await client.get(
-                "https://bugcrowd.com/programs.json",
-                params={"page": page, "sort[]": "promoted", "hidden[]": "false"},
+                "https://bugcrowd.com/engagements.json",
+                params={"offset": offset, "limit": limit},
                 headers=HEADERS,
                 timeout=20,
             )
             if r.status_code != 200:
                 break
             data = r.json()
-            batch = data.get("programs", [])
+            batch = data.get("engagements", [])
             if not batch:
                 break
             for p in batch:
+                reward = p.get("rewardSummary", {}) or {}
                 # only include programs with rewards (paying)
-                if p.get("max_payout") or p.get("min_payout") or p.get("offers_bounties"):
+                if reward.get("minReward") or reward.get("maxReward") or reward.get("summary"):
                     programs.append(p)
-            print(f"[*] fetched page {page} — {len(programs)} paying programs so far", file=sys.stderr)
-            if len(batch) < 25:
+            print(f"[*] fetched offset {offset} — {len(programs)} paying programs so far", file=sys.stderr)
+            if len(batch) < limit:
                 break
-            page += 1
+            offset += limit
             await asyncio.sleep(0.5)
         except Exception as e:
-            print(f"[!] error fetching page {page}: {e}", file=sys.stderr)
+            print(f"[!] error fetching offset {offset}: {e}", file=sys.stderr)
             break
     return programs
 
@@ -78,7 +80,7 @@ async def main():
 
         if args.list:
             for p in programs:
-                print(f"{p.get('name', '')} — https://bugcrowd.com/{p.get('program_url', '')}")
+                print(f"{p.get('name', '')} — https://bugcrowd.com{p.get('briefUrl', '')}")
             return
 
         if args.output:
@@ -86,12 +88,12 @@ async def main():
 
         all_domains = set()
         for i, p in enumerate(programs, 1):
-            slug = p.get("program_url", "")
-            name = p.get("name", slug)
-            if not slug:
+            brief_url = p.get("briefUrl", "")
+            name = p.get("name", brief_url)
+            if not brief_url:
                 continue
-
-            url = f"https://bugcrowd.com/{slug}"
+            slug = brief_url.strip("/").split("/")[-1]
+            url = f"https://bugcrowd.com{brief_url}"
             print(f"[{i}/{len(programs)}] {name} ({slug})", file=sys.stderr)
 
             try:
