@@ -13,6 +13,12 @@ import json
 import time
 from pathlib import Path
 import httpx
+from rich.console import Console
+from rich.table import Table
+from rich.live import Live
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
+
+console = Console()
 
 HEADERS = {
     "Accept": "application/vnd.bugcrowd.v4+json",
@@ -87,38 +93,60 @@ async def main():
             Path(args.output).mkdir(parents=True, exist_ok=True)
 
         all_domains = set()
-        for i, p in enumerate(programs, 1):
-            brief_url = p.get("briefUrl", "")
-            name = p.get("name", brief_url)
-            if not brief_url:
-                continue
-            slug = brief_url.strip("/").split("/")[-1]
-            url = f"https://bugcrowd.com{brief_url}"
-            print(f"[{i}/{len(programs)}] {name} ({slug})", file=sys.stderr)
+        results_table = Table(
+            "program", "slug", "targets", "sample",
+            title="bugcrowd scope scraper",
+            show_lines=False,
+        )
+        results_table.columns[0].style = "bold cyan"
+        results_table.columns[2].style = "green"
 
-            try:
-                targets = await scrape_scope(url, client)
-                if targets:
-                    all_domains.update(targets)
-                    if args.output:
-                        out_file = Path(args.output) / f"{slug}.txt"
-                        out_file.write_text("\n".join(targets) + "\n")
-                        print(f"  -> {len(targets)} targets saved to {out_file}", file=sys.stderr)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("scraping...", total=len(programs))
+
+            for i, p in enumerate(programs, 1):
+                brief_url = p.get("briefUrl", "")
+                name = p.get("name", brief_url)
+                if not brief_url:
+                    progress.advance(task)
+                    continue
+                slug = brief_url.strip("/").split("/")[-1]
+                url = f"https://bugcrowd.com{brief_url}"
+                progress.update(task, description=f"[{i}/{len(programs)}] {name[:40]}")
+
+                try:
+                    targets = await scrape_scope(url, client)
+                    if targets:
+                        all_domains.update(targets)
+                        sample = targets[0] if targets else ""
+                        results_table.add_row(name[:40], slug, str(len(targets)), sample)
+                        if args.output:
+                            out_file = Path(args.output) / f"{slug}.txt"
+                            out_file.write_text("\n".join(targets) + "\n")
+                        else:
+                            for t in targets:
+                                print(t)
                     else:
-                        for t in targets:
-                            print(t)
-                else:
-                    print(f"  -> no targets found", file=sys.stderr)
-            except Exception as e:
-                print(f"  -> error: {e}", file=sys.stderr)
+                        results_table.add_row(name[:40], slug, "[dim]0[/dim]", "[dim]no targets[/dim]")
+                except Exception as e:
+                    results_table.add_row(name[:40], slug, "[red]err[/red]", str(e)[:40])
 
-            await asyncio.sleep(args.delay)
+                progress.advance(task)
+                await asyncio.sleep(args.delay)
 
-        print(f"\n[*] total unique domains: {len(all_domains)}", file=sys.stderr)
+        console.print(results_table)
+        console.print(f"\n[bold green]total unique domains: {len(all_domains)}[/bold green]")
         if args.output:
             master = Path(args.output) / "_all_domains.txt"
             master.write_text("\n".join(sorted(all_domains)) + "\n")
-            print(f"[*] master list saved to {master}", file=sys.stderr)
+            console.print(f"[dim]master list saved to {master}[/dim]")
 
 
 if __name__ == "__main__":
